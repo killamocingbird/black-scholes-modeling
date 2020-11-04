@@ -120,6 +120,12 @@ class Burgers_PDE(m.Foundation):
             nn.Tanh(),
             nn.Linear(20, 20),
             nn.Tanh(),
+            nn.Linear(20, 20),
+            nn.Tanh(),
+            nn.Linear(20, 20),
+            nn.Tanh(),
+            nn.Linear(20, 20),
+            nn.Tanh(),
             nn.Linear(20, 1)
         )
         self.lambda_1 = nn.Parameter(torch.tensor(0., requires_grad=True))
@@ -139,7 +145,7 @@ class Burgers_PDE(m.Foundation):
         u_t = Gradient[:,1]
         u_xx = Hessian[:,0]
         
-        h = u_t + lambda_1*u*u_x - lambda_2*u_xx
+        h = u_t + lambda_1*u.squeeze()*u_x - lambda_2*u_xx
 
         if return_forward:
             return h, u
@@ -158,9 +164,6 @@ def second_order_partials(f, wrt, create_graph=True):
     
     return gradient, hessian
 
-    
-    
-    
     
     
     
