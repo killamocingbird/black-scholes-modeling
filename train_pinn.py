@@ -1,9 +1,6 @@
-"""
-Main training script
-"""
-
 import matplotlib.pyplot as plt
 import numpy as np
+import random
 import time
 import torch
 from torch.autograd import grad
@@ -12,7 +9,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 from tqdm import tqdm
 
-from model import BS_PDE, L2
+from model import BS_PDE, BS_SDE, L2
 import modules as m
 import util
 
@@ -21,13 +18,17 @@ header = 'BS_1_fixed_'
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 debug = False
-seed = 1                               # Seeds for stochastic reproducability
-batch_size = 500                       # Batch size for SGD
+seed = 10000                               # Seeds for stochastic reproducability
+batch_size = 1024                       # Batch size for SGD
 epochs = 500                           # Number of epochs to train network for
 lr = 5e-4                               # Initial learning rate
 #checkpoint = header + 'checkpoint.pth'
 checkpoint = None
 verbose = 1                           # Number of epochs to print, -1 for none
+
+### Strike price and interest rate respectively ###
+k = 1
+r = 0.03
 
 # Set seed
 util.set_seed(seed, device)
@@ -44,8 +45,41 @@ ytrain = dataset[:9 * len(dataset) // 10, -1]
 xval = dataset[9 * len(dataset) // 10:, :-1]
 yval = dataset[9 * len(dataset) // 10:, -1]
 
+# Drop everything except for S and T
+xtrain = torch.cat((xtrain[:,0:1], xtrain[:,2:3]), 1)
+xval = torch.cat((xval[:,0:1], xval[:,2:3]), 1)
+
+##### Sort based on time to get SDE data #####
+def sde_setup(x, y):
+    # Add y as last column for full dataset
+    data = torch.cat((x, y.unsqueeze(1)), 1)
+    
+    # Extract times
+    times = data[:,1].unique()
+    times.sort()
+    
+    # Put all datapoints from the same time into groups
+    pools = [data[data[:,1]==t] for t in times]
+    # For each entree in each pool, generate an index to pair from the previous pool
+    selects = [torch.as_tensor([random.randint(0, len(pools[i])-1) 
+                                for j in range(len(pools[i+1]))]).to(x.device)
+               for i in range(len(pools)-1)]
+    # Create newly paired data
+    ret = torch.ones(0, 6).to(x.device)
+    
+    for i in range(1, len(pools)):
+        # Pair pool with previous data
+        to_append = torch.cat((pools[i], pools[i-1][selects[i-1]]), 1)
+        ret = torch.cat((ret, to_append), 0)
+    
+    return ret
+
+train_data = sde_setup(xtrain, ytrain)
+val_data = sde_setup(xval, yval)
+
 # Declare model and optimizer
-model = BS_PDE(device)
+#model = BS_PDE(device)
+model = BS_SDE(device)
 model = model.to(device)
 optimizer = optim.Adam(model.parameters(), lr=lr)
 
@@ -68,23 +102,27 @@ time.sleep(0.5)
 for epoch in range(epochs):
     # Begin timer
     start_time = time.time()
-    
-    # Shuffle training data
-    perm = np.random.permutation(len(xtrain))
-    xtrain = xtrain[perm]
-    ytrain = ytrain[perm]
     running_loss = 0
+    # Shuffle data
+    train_data = train_data[np.random.permutation(len(train_data))]
+    xtrain = train_data[:,:2]
+    ytrain = train_data[:,2]
+    xval = val_data[:,:2]
+    yval = val_data[:,2]
+    
     model.train()
     train_p_bar = tqdm(range(len(xtrain) // batch_size))
     for batch_idx in train_p_bar:
-        xbatch = xtrain[batch_idx*batch_size:(batch_idx+1)*batch_size]
-        ybatch = ytrain[batch_idx*batch_size:(batch_idx+1)*batch_size]
+        idx = slice(batch_idx*batch_size,(batch_idx+1)*batch_size)
+        xbatch = xtrain[idx]
+        ybatch = ytrain[idx]
+        prev_batch = train_data[idx][:,3:-1]
         
-        h, V = model.pde_structure(xbatch[:,:3], xbatch[:,3])
-        
+        h, V = model.pde_structure(xbatch[:,:3], r)
         loss = L2(h, torch.zeros(h.shape).to(device)) + \
-               model.boundary_conditions(xbatch[:,:3], xbatch[:,3], epoch=epoch) + \
-               L2(V.squeeze(), ybatch)
+               L2(V.squeeze(), ybatch) + \
+               model.sde_conditions(xbatch, prev_batch, r)
+               #model.boundary_conditions(xbatch[:,:3], k, r, epoch=epoch) + \
         
         optimizer.zero_grad()
         loss.backward()
@@ -97,14 +135,16 @@ for epoch in range(epochs):
     running_val_loss = 0  
     model.eval()
     for batch_idx in range(len(xval) // batch_size):
-        xbatch = xval[batch_idx*batch_size:(batch_idx+1)*batch_size]
-        ybatch = yval[batch_idx*batch_size:(batch_idx+1)*batch_size]
+        idx = slice(batch_idx*batch_size,(batch_idx+1)*batch_size)
+        xbatch = xval[idx]
+        ybatch = yval[idx]
+        prev_batch = val_data[idx][:,3:-1]
     
-        h, V = model.pde_structure(xbatch[:,:3], xbatch[:,3])
-    
+        h, V = model.pde_structure(xbatch[:,:3], r)
         loss = L2(h, torch.zeros(h.shape).to(device)) + \
-               model.boundary_conditions(xbatch[:,:3], xbatch[:,3]) + \
-               L2(V.squeeze(), ybatch)
+               L2(V.squeeze(), ybatch) + \
+               model.sde_conditions(xbatch, prev_batch, r)
+               #model.boundary_conditions(xbatch[:,:3], k, r, epoch=epoch)
                
         running_val_loss += loss.item()
     running_val_loss /= (batch_idx + 1)
@@ -120,6 +160,8 @@ for epoch in range(epochs):
     sigmas.append(model.sigma.detach().cpu().item())
 
 plt.plot([i for i in range(1, len(sigmas) + 1)], sigmas)
+plt.plot([i for i in range(1, len(sigmas) + 1)], [0.65 for i in range(1, len(sigmas) + 1)], '--')
+plt.legend(['Learned', 'Actual'])
 plt.xlabel('Epoch')
 plt.ylabel('Implied Volatility')
 

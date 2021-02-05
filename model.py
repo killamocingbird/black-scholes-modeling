@@ -10,26 +10,40 @@ import modules as m
 
 L2 = nn.MSELoss()
 
+class scaled_tanh(nn.Tanh):
+    def __init__(self):
+        super().__init__()
+    
+    def forward(self, x):
+        return torch.tanh(x)
+
 class BS_PDE(m.Foundation):
     def __init__(self, device):
         super().__init__()
         # Input: (S, S_0, Tau)
         self.layers = nn.Sequential(
             nn.Linear(2, 20),
-            nn.Tanh(),
+            #nn.Tanh(),
+            scaled_tanh(),
             nn.Linear(20, 20),
-            nn.Tanh(),
+            #nn.Tanh(),
+            scaled_tanh(),
             nn.Linear(20, 20),
-            nn.Tanh(),
+            #nn.Tanh(),
+            scaled_tanh(),
             nn.Linear(20, 20),
-            nn.Tanh(),
+            #nn.Tanh(),
+            scaled_tanh(),
             nn.Linear(20, 20),
-            nn.Tanh(),
+            #nn.Tanh(),
+            scaled_tanh(),
             nn.Linear(20, 1)
         )
         self.sigma = nn.Parameter(torch.tensor(.5, requires_grad=True))
+        self.device = device
+        #self.sigma = torch.as_tensor(0.65)
     
-    # x: [batch, 3]
+    # x: [batch, 2]
     def forward(self, x):
         return self.layers(x)
     
@@ -111,7 +125,40 @@ class BS_PDE(m.Foundation):
                L2(b_2.squeeze(), F.relu(B_2[:,0] - k))# + \
                #L2(b_3.squeeze(), B_3[:,0] - k * torch.exp(-r * B_3[:,1]))
                #(pulsed_delta * (b_3.squeeze() - B_3[:,0])**2).mean()
-     
+    
+
+class BS_SDE(BS_PDE):
+    def __init__(self, device):
+        super().__init__(device)
+        
+    def sde_conditions(self, x, x_prev, r):
+        # x: [S, T], x_prev: [S, T]
+        f = self.forward(x).squeeze()
+        
+        sigma = self.sigma
+        x_prev.requires_grad = True
+        f_prev = self.forward(x_prev)
+        
+        # Calculate partial for prev
+        Jacocbian_1, Jacobian_2 = second_order_jacobians(f_prev, x_prev)
+        
+        dfdt =  Jacocbian_1[:,1,0]
+        ddfdSS = Jacobian_2[:,0,0]
+        dfdS = Jacocbian_1[:,0,0]
+        
+        # Calculate delta t
+        delta_t = x[:,1] - x_prev[:,1]
+        
+        # Sample from normal distribution
+        Z = torch.normal(torch.zeros(len(delta_t)), torch.ones(len(delta_t))).to(self.device)
+        
+        u = f_prev.squeeze() + delta_t * (dfdt + r*x_prev[:,0]*dfdS + 
+                                .5*(x_prev[:,0] * sigma)**2 * ddfdSS) + \
+            sigma * x_prev[:,0] * f_prev.squeeze() * (delta_t)**(.5) * Z
+        
+        return L2(u, f)
+        
+    
         
 class Discrete_BS_PDE(m.Foundation):
     def __init__(self, delta_t, q, device):
@@ -164,10 +211,10 @@ class Discrete_BS_PDE(m.Foundation):
         x.requires_grad = True
         V = self.forward(x)
         
-        Jacocbian_1, Jacocbian_2 = second_order_jacobians(V, x)
-        dVdt =  Jacocbian_1[:,1,:]
-        ddVdSS = Jacocbian_2[:,0,:]
-        dVdS = Jacocbian_1[:,0,:]
+        Jacobian_1, Jacobian_2 = second_order_jacobians(V, x)
+        dVdt =  Jacobian_1[:,1,:]
+        ddVdSS = Jacobian_2[:,0,:]
+        dVdS = Jacobian_1[:,0,:]
         
         # Might break
         h = -dVdt + (ddVdSS.t() * .5 * sigma**2 * x[:,0]**2).t() + r * (dVdS.t() * x[:,0]).t() - r * V.squeeze()
@@ -218,10 +265,10 @@ class Burgers_PDE(m.Foundation):
         lambda_2 = torch.exp(self.lambda_2)
         x.requires_grad = True
         u = self.forward(x)
-        Jacocbian_1, Jacobian_2 = second_order_jacobians(u, x)
+        Jacobian_1, Jacobian_2 = second_order_jacobians(u, x)
         
-        u_x = Jacocbian_1[:,0,0]
-        u_t = Jacocbian_1[:,1,0]
+        u_x = Jacobian_1[:,0,0]
+        u_t = Jacobian_1[:,1,0]
         u_xx = Jacobian_2[:,0,0]
         
         h = u_t + lambda_1*u*u_x - lambda_2*u_xx
@@ -233,20 +280,18 @@ class Burgers_PDE(m.Foundation):
 
 
 class Discrete_Burgers_PDE(m.Foundation):
-    def __init__(self, delta_t, q, device):
+    def __init__(self, delta_t, q, device, lb=-1, ub=1):
         super().__init__()
         self.layers = nn.Sequential(
-            nn.Linear(1, 20),
+            nn.Linear(1, 50),
             nn.Tanh(),
-            nn.Linear(20, 20),
+            nn.Linear(50, 50),
             nn.Tanh(),
-            nn.Linear(20, 20),
+            nn.Linear(50, 50),
             nn.Tanh(),
-            nn.Linear(20, 20),
+            nn.Linear(50, 50),
             nn.Tanh(),
-            nn.Linear(20, 20),
-            nn.Tanh(),
-            nn.Linear(20, q)
+            nn.Linear(50, q),
         )
         self.lambda_1 = nn.Parameter(torch.tensor(0., requires_grad=True))
         self.lambda_2 = nn.Parameter(torch.tensor(-6., requires_grad=True))
@@ -255,7 +300,10 @@ class Discrete_Burgers_PDE(m.Foundation):
         self.delta_t = delta_t
         
         # Load in Runge Kutta weights
-        self.load_runge_kutta_weights(q, device=device)
+        self.load_runge_kutta_weights(max(q, 1), device=device)
+        
+        self.lb = lb
+        self.ub = ub
     
     def load_runge_kutta_weights(self, q, path='IRK_weights', device='cpu'):
         target_file = os.path.join(path, 'Butcher_IRK%d.txt' % (q))
@@ -273,20 +321,20 @@ class Discrete_Burgers_PDE(m.Foundation):
     # Returns forward of network
     # [batch, q]
     def forward(self, x):
-        return self.layers(x)
+        # Normalize
+        x_star = 2.0*(x - self.lb)/(self.ub - self.lb) - 1.0
+        return self.layers(x_star)
     
     # Returns [N[u^n, lambda], i], u (if return_forward) where N[u^n, lambda], i = N[u^(n+c_i), lambda]
     # [batch, q]
-    # Assumes working with T (dT/dt = -1)
-    # x = [S, Tau]
     def pde_structure(self, x, return_forward=True):
         lambda_1 = self.lambda_1        
         lambda_2 = torch.exp(self.lambda_2)
         x.requires_grad = True
         u = self.forward(x)
-        Jacocbian_1, Jacobian_2 = second_order_jacobians(u, x)
+        Jacobian_1, Jacobian_2 = second_order_jacobians(u, x)
         
-        u_x = Jacocbian_1[:,0,:]
+        u_x = Jacobian_1[:,0,:]
         u_xx = Jacobian_2[:,0,:]
         
         h = lambda_1*u*u_x - lambda_2*u_xx
@@ -298,14 +346,14 @@ class Discrete_Burgers_PDE(m.Foundation):
     
     # Returns u^n = u^(n+c_i) + delta_t * dot(alphai, N[u^(n+c_i), lambda])
     def get_u_0(self, x):
-        h, V = self.pde_structure(x)
-        u_0 = V + self.delta_t * h @ self.IRK_alpha.t()
+        h, u = self.pde_structure(x)
+        u_0 = u + self.delta_t * h @ self.IRK_alpha.t()
         return u_0
     
     # Returns u^(n+1) = u^(n+c_i) + delta_t * dot(alphai - beta, N[u^(n+c_i), lambda])
     def get_u_1(self, x):
-        h, V = self.pde_structure(x)
-        u_1 = V + self.delta_t * h @ (self.IRK_alpha - self.IRK_beta).t()
+        h, u = self.pde_structure(x)
+        u_1 = u + self.delta_t * h @ (self.IRK_alpha - self.IRK_beta).t()
         return u_1
     
     
