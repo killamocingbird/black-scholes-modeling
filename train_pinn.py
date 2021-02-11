@@ -20,7 +20,7 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 debug = False
 seed = 10000                               # Seeds for stochastic reproducability
 batch_size = 1024                       # Batch size for SGD
-epochs = 500                           # Number of epochs to train network for
+epochs = 2000                           # Number of epochs to train network for
 lr = 5e-4                               # Initial learning rate
 #checkpoint = header + 'checkpoint.pth'
 checkpoint = None
@@ -34,9 +34,11 @@ r = 0.03
 util.set_seed(seed, device)
 
 # Load in data
-dataset = util.import_dataset(data_path='option_call_dataset_frozen.txt')
+# dataset = util.import_dataset(data_path='option_call_dataset_frozen.txt')
+dataset = util.import_dataset(data_path='option_call_dataset_brownian.txt')
 # Shuffle
-dataset = torch.as_tensor(dataset[np.random.permutation(len(dataset))], device=device).float()
+# dataset = torch.as_tensor(dataset[np.random.permutation(len(dataset))], device=device).float()
+dataset = torch.as_tensor(dataset, device=device).float()
 
 # 90 / 10 split on training and validation
 xtrain = dataset[:9 * len(dataset) // 10, :-1]
@@ -74,8 +76,10 @@ def sde_setup(x, y):
     
     return ret
 
-train_data = sde_setup(xtrain, ytrain)
-val_data = sde_setup(xval, yval)
+# train_data = sde_setup(xtrain, ytrain)
+# val_data = sde_setup(xval, yval)
+train_data = torch.cat((xtrain[1:], ytrain.unsqueeze(1)[1:], xtrain[:-1], ytrain.unsqueeze(1)[:-1]), 1)
+val_data = torch.cat((xval[1:], yval.unsqueeze(1)[1:], xval[:-1], yval.unsqueeze(1)[:-1]), 1)
 
 # Declare model and optimizer
 #model = BS_PDE(device)
@@ -123,6 +127,7 @@ for epoch in range(epochs):
                L2(V.squeeze(), ybatch) + \
                model.sde_conditions(xbatch, prev_batch, r)
                #model.boundary_conditions(xbatch[:,:3], k, r, epoch=epoch) + \
+        loss *= 100
         
         optimizer.zero_grad()
         loss.backward()
@@ -145,6 +150,7 @@ for epoch in range(epochs):
                L2(V.squeeze(), ybatch) + \
                model.sde_conditions(xbatch, prev_batch, r)
                #model.boundary_conditions(xbatch[:,:3], k, r, epoch=epoch)
+        loss *= 100
                
         running_val_loss += loss.item()
     running_val_loss /= (batch_idx + 1)

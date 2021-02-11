@@ -80,7 +80,8 @@ def generate_space(n=100000, frozen=[False for i in range(5)]):
     if frozen[0]:
         S0 = np.array([1.0 for i in range(num_per)])
     else:
-        S0 = sampling_nonlinear([0.01,3],num_per)
+        #S0 = sampling_nonlinear([0.01,2],num_per)
+        S0 = np.linspace(0.01,2,num_per)
     K = np.linspace(1,1,num_per)
     #m = np.linspace(0.6,1.4,10)
     
@@ -93,7 +94,7 @@ def generate_space(n=100000, frozen=[False for i in range(5)]):
         r = np.linspace(0.01,0.05,num_per)
         
     if frozen[4]:
-        sigma = np.array([0.65 for i in range(num_per)])
+        sigma = np.array([0.32 for i in range(num_per)])
     else:
         sigma = np.linspace(0.3,1.0,num_per)
     
@@ -119,6 +120,42 @@ def get_call_option_dataset(frozen=[False for i in range(5)]):
                         option_call[i,:] = [S0,K,T,r,sigma, temp]
                         i = i+1
     return option_call
+
+
+# Creates stochastically random dataset based off brownian motion with
+# fixed interest rate and volatility
+def get_brownian_call_option_dataset(length, k=1, r=.03, sigma=.65, seed=-1):
+    if seed != -1:
+        np.random.seed(seed)
+    
+    # Generate time steps
+    T = np.linspace(0.01, 1.0, length)
+    
+    # Generate initial stock value stochastically
+    S = np.zeros((length))
+    S[0] = np.random.rand() * 2
+    val = np.zeros((length))
+    val[0] = euro_vanilla_call(S[0], k, T[0], r, sigma)
+    
+    # Generate via brownian motion
+    for i in range(1, length):
+        d_t = T[i] - T[i-1]
+        z = np.random.normal()
+        S[i] = S[i-1] * np.exp((r - .5*sigma**2)*d_t + sigma * np.sqrt(d_t)*z)
+        # Find value of option
+        val[i] = euro_vanilla_call(S[i], k, T[i], r, sigma)
+        
+    # Generate formatted dataset
+    option_call = np.zeros((length, 6))
+    option_call[:, 0] = S
+    option_call[:, 1] = k
+    option_call[:, 2] = T
+    option_call[:, 3] = r
+    option_call[:, 4] = sigma
+    option_call[:, 5] = val
+    
+    return option_call
+    
 
 def normal_pdf(y, mean=0, sigma=1.0):
 	numerator = math.exp((-1 * math.pow((y - mean), 2)) / 2 * math.pow(sigma, 2))
@@ -174,8 +211,9 @@ def implied_volatility(S, K, T, r, mp, option_type="call", precision=1e-5, itera
                     
 if __name__ == "__main__":
     
-    option_call_dataset = get_call_option_dataset(frozen=[False, True, False, True, True])
+    #option_call_dataset = get_call_option_dataset(frozen=[False, True, False, True, True])
+    option_call_dataset = get_brownian_call_option_dataset(100000)
     
     plt.hist(option_call_dataset[:,5])
-    np.savetxt('option_call_dataset_frozen.txt',option_call_dataset,delimiter=',')
+    np.savetxt('option_call_dataset_brownian.txt',option_call_dataset,delimiter=',')
         
