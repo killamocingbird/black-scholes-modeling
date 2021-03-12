@@ -15,31 +15,27 @@ class scaled_tanh(nn.Tanh):
         super().__init__()
     
     def forward(self, x):
-        return torch.tanh(x)
+        return torch.tanh(2*x)
 
 class BS_PDE(m.Foundation):
     def __init__(self, device):
         super().__init__()
         # Input: (S, S_0, Tau)
         self.layers = nn.Sequential(
-            nn.Linear(2, 20),
-            #nn.Tanh(),
+            nn.Linear(2, 128),
             scaled_tanh(),
-            nn.Linear(20, 20),
-            #nn.Tanh(),
+            nn.Linear(128, 128),
             scaled_tanh(),
-            nn.Linear(20, 20),
-            #nn.Tanh(),
+            nn.Linear(128, 128),
             scaled_tanh(),
-            nn.Linear(20, 20),
-            #nn.Tanh(),
+            nn.Linear(128, 128),
             scaled_tanh(),
-            nn.Linear(20, 20),
-            #nn.Tanh(),
+            nn.Linear(128, 64),
             scaled_tanh(),
-            nn.Linear(20, 1)
+            nn.Linear(64, 1)
         )
-        self.sigma = nn.Parameter(torch.tensor(.5, requires_grad=True))
+        #self.sigma = nn.Parameter(torch.tensor(.5, requires_grad=True))
+        self.sigma = .65
         self.device = device
         #self.sigma = torch.as_tensor(0.65)
     

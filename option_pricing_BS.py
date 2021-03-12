@@ -11,6 +11,9 @@ import math
 import matplotlib.pyplot as plt 
 import operator
 
+import torch
+from tqdm import tqdm
+
 """
 Deltas and explicit solution for euro_vanilla_call
 """
@@ -80,21 +83,22 @@ def generate_space(n=100000, frozen=[False for i in range(5)]):
     if frozen[0]:
         S0 = np.array([1.0 for i in range(num_per)])
     else:
-        #S0 = sampling_nonlinear([0.01,2],num_per)
-        S0 = np.linspace(0.01,2,num_per)
+        S0 = sampling_nonlinear([.5,1.2],num_per)
+        #S0 = np.linspace(0.01,2,num_per)
     K = np.linspace(1,1,num_per)
     #m = np.linspace(0.6,1.4,10)
     
-    #T = sampling_nonlinear([0.01,0.05],10)
-    T = np.linspace(0.01,1.0,num_per)
+    T = .5-sampling_nonlinear([0,.5-0.01],num_per)
+    #T = np.linspace(0.01,1.0,num_per)
     
     if frozen[3]:
+        #r = np.array([0.0 for i in range(num_per)])
         r = np.array([0.03 for i in range(num_per)])
     else:
         r = np.linspace(0.01,0.05,num_per)
         
     if frozen[4]:
-        sigma = np.array([0.32 for i in range(num_per)])
+        sigma = np.array([0.65 for i in range(num_per)])
     else:
         sigma = np.linspace(0.3,1.0,num_per)
     
@@ -104,7 +108,7 @@ def generate_space(n=100000, frozen=[False for i in range(5)]):
 
 def get_call_option_dataset(frozen=[False for i in range(5)]):
     
-    dataset = generate_space(frozen=[False, True, False, True, True])
+    dataset = generate_space(frozen=frozen)
     
     nc = [len(set(dataset[:,i])) for i in range(np.shape(dataset)[1])]
     n = np.product(nc)
@@ -124,7 +128,7 @@ def get_call_option_dataset(frozen=[False for i in range(5)]):
 
 # Creates stochastically random dataset based off brownian motion with
 # fixed interest rate and volatility
-def get_brownian_call_option_dataset(length, k=1, r=.03, sigma=.65, seed=-1):
+def get_brownian_call_option_dataset(length, k=3, r=.03, sigma=.65, seed=-1):
     if seed != -1:
         np.random.seed(seed)
     
@@ -210,10 +214,78 @@ def implied_volatility(S, K, T, r, mp, option_type="call", precision=1e-5, itera
 
                     
 if __name__ == "__main__":
+    option_call_dataset = get_call_option_dataset(frozen=[False, True, False, True, True])
+    np.savetxt('option_call_dataset_simplified.txt',option_call_dataset,delimiter=',')
     
-    #option_call_dataset = get_call_option_dataset(frozen=[False, True, False, True, True])
-    option_call_dataset = get_brownian_call_option_dataset(100000)
+# =============================================================================
+#     proc_dataset = torch.zeros(0, 6)   
+#     full_dataset = np.zeros((0, 6))
+#     num_paths = 500
+#     path_length = 500
+#     for i in tqdm(range(num_paths)):
+#         # Generate path
+#         path = torch.as_tensor(get_brownian_call_option_dataset(path_length))
+#         full_dataset = np.concatenate((full_dataset, path), 0)
+#         # Keep only S, T, and value and concate the next step
+#         path = torch.cat((path[:,0:1], path[:,2:3], path[:,-1].unsqueeze(1)), 1)
+#         path = torch.cat((path[1:], path[:-1]), 1)
+#         
+#         proc_dataset = torch.cat((proc_dataset, path), 0)
+#         
+#     torch.save(proc_dataset, 'brownian_dataset_500_500.pth')
+#     np.savetxt('option_call_dataset_brownian_500_500.txt',full_dataset,delimiter=',')
+# =============================================================================
     
-    plt.hist(option_call_dataset[:,5])
-    np.savetxt('option_call_dataset_brownian.txt',option_call_dataset,delimiter=',')
+    
+    
+    
+def evaluate(model, dataset):
+    k = dataset[:,1]
+    dataset = torch.cat((dataset[:,0:1], dataset[:,2:]), 1)
+    pred_value = model(dataset[:,:2])
+    
+    # MSE of function
+    f_MSE = ((pred_value.detach().cpu().view(-1) - dataset[:,-1].cpu())**2).mean()
+    
+    # MSE of delta
+    pred_delta = model.get_delta(dataset[:,:2])
+    real_delta = delta(dataset[:,0].cpu().numpy(), k.cpu().numpy(), 
+                       dataset[:,1].cpu().numpy(), dataset[:,2].cpu().numpy(), dataset[:,3].cpu().numpy())
+    d_MSE = ((pred_delta.detach().cpu().view(-1) - torch.as_tensor(real_delta))**2).mean()
+    
+    # MSE of gamma
+    pred_gamma = model.get_gamma(dataset[:,:2])
+    real_gamma = gamma(dataset[:,0].cpu().numpy(), k.cpu().numpy(), 
+                       dataset[:,1].cpu().numpy(), dataset[:,2].cpu().numpy(), dataset[:,3].cpu().numpy())
+    g_MSE = ((pred_gamma.detach().cpu().view(-1) - torch.as_tensor(real_gamma))**2).mean()
+    
+    # MSE of theta
+    pred_theta = model.get_theta(dataset[:,:2])
+    real_theta = theta(dataset[:,0].cpu().numpy(), k.cpu().numpy(),
+                       dataset[:,1].cpu().numpy(), dataset[:,2].cpu().numpy(), dataset[:,3].cpu().numpy())
+    t_MSE = ((pred_theta.detach().cpu().view(-1) - torch.as_tensor(real_theta))**2).mean()
+    
+    print("Function MSE: %.8f" % f_MSE)
+    print("Delta MSE: %.8f" % d_MSE)
+    print("Gamma MSE: %.8f" % g_MSE)
+    print("Theta MSE: %.8f" % t_MSE)
+    print("Predicted Sigma: %.4f" % model.sigma.cpu().item())
+    
         
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    

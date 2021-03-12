@@ -7,12 +7,12 @@ import option_pricing_BS as bs
 import util
 
 
-checkpoint = 'BS_1_fixed_checkpoint.pth'    
+checkpoint = 'BS_1_fixed_sigma_checkpoint.pth'    
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # Load in data
-dataset = torch.as_tensor(util.import_dataset(data_path='option_call_dataset_frozen.txt')).to(device).float()
+dataset = torch.as_tensor(util.import_dataset(data_path='option_call_dataset_simplified.txt')).to(device).float()
 
 # Declare model and optimizer
 model = BS_PDE(device)
@@ -25,7 +25,9 @@ if checkpoint is not None:
     model.load(checkpoint)
     model = model.to(device)
 
-pred_value = model(dataset[:,:3])
+k = dataset[:,1]
+dataset = torch.cat((dataset[:,0:1], dataset[:,2:]), 1)
+pred_value = model(dataset[:,:2])
 
 # Colored scattered plot in 3D
 def scatter_col(x, y, z, n, ax):
@@ -37,7 +39,7 @@ def scatter_col(x, y, z, n, ax):
     for i in range(n):
         filt = (partitions[i] <= z) * (z < partitions[i + 1])
         ax.scatter(x[filt], y[filt], z[filt], c=colors[i])
-    
+exit()
 # Generate and save colored scatter plot of model and real data respectivelys
 def scatter_both(model_pred, gt, z_label, save_path):
     fig = plt.figure(figsize=(20, 10))
@@ -62,38 +64,39 @@ def scatter_both(model_pred, gt, z_label, save_path):
     ax2.set_zlim(zlim)
     
     plt.savefig(save_path)
+    plt.close()
 
 
 # Graph prediction
-scatter_both([dataset[:,0].cpu(), dataset[:,2].cpu(), pred_value.detach().cpu().view(-1)],
-             [dataset[:,0].cpu(), dataset[:,2].cpu(), dataset[:,-1].cpu()],
+scatter_both([dataset[:,0].cpu(), dataset[:,1].cpu(), pred_value.detach().cpu().view(-1)],
+             [dataset[:,0].cpu(), dataset[:,1].cpu(), dataset[:,-1].cpu()],
              'Options Price',
              'ModelOutput.png')
 
 # Graph delta
-pred_delta = model.get_delta(dataset[:,:3])
-real_delta = bs.delta(dataset[:,0].cpu().numpy(), dataset[:,1].cpu().numpy(), 
-                      dataset[:,2].cpu().numpy(), dataset[:,3].cpu().numpy(), dataset[:,4].cpu().numpy())
-scatter_both([dataset[:,0].cpu(), dataset[:,2].cpu(), pred_delta.detach().cpu().view(-1)],
-             [dataset[:,0].cpu(), dataset[:,2].cpu(), torch.as_tensor(real_delta)],
+pred_delta = model.get_delta(dataset[:,:2])
+real_delta = bs.delta(dataset[:,0].cpu().numpy(), k.cpu().numpy(), 
+                      dataset[:,1].cpu().numpy(), dataset[:,2].cpu().numpy(), dataset[:,3].cpu().numpy())
+scatter_both([dataset[:,0].cpu(), dataset[:,1].cpu(), pred_delta.detach().cpu().view(-1)],
+             [dataset[:,0].cpu(), dataset[:,1].cpu(), torch.as_tensor(real_delta)],
              'Delta',
              'Delta.png')
 
 # Graph gamma
-pred_gamma = model.get_gamma(dataset[:,:3])
-real_gamma = bs.gamma(dataset[:,0].cpu().numpy(), dataset[:,1].cpu().numpy(), 
-                      dataset[:,2].cpu().numpy(), dataset[:,3].cpu().numpy(), dataset[:,4].cpu().numpy())
-scatter_both([dataset[:,0].cpu(), dataset[:,2].cpu(), pred_gamma.detach().cpu().view(-1)],
-             [dataset[:,0].cpu(), dataset[:,2].cpu(), torch.as_tensor(real_gamma)],
+pred_gamma = model.get_gamma(dataset[:,:2])
+real_gamma = bs.gamma(dataset[:,0].cpu().numpy(), k.cpu().numpy(), 
+                      dataset[:,1].cpu().numpy(), dataset[:,2].cpu().numpy(), dataset[:,3].cpu().numpy())
+scatter_both([dataset[:,0].cpu(), dataset[:,1].cpu(), pred_gamma.detach().cpu().view(-1)],
+             [dataset[:,0].cpu(), dataset[:,1].cpu(), torch.as_tensor(real_gamma)],
              'Gamma',
              'Gamma.png')
 
 # Graph theta
-pred_theta = model.get_theta(dataset[:,:3])
-real_theta = bs.theta(dataset[:,0].cpu().numpy(), dataset[:,1].cpu().numpy(),
-                      dataset[:,2].cpu().numpy(), dataset[:,3].cpu().numpy(), dataset[:,4].cpu().numpy())
-scatter_both([dataset[:,0].cpu(), dataset[:,2].cpu(), pred_theta.detach().cpu().view(-1)],
-             [dataset[:,0].cpu(), dataset[:,2].cpu(), torch.as_tensor(real_theta)],
+pred_theta = model.get_theta(dataset[:,:2])
+real_theta = bs.theta(dataset[:,0].cpu().numpy(), k.cpu().numpy(),
+                      dataset[:,1].cpu().numpy(), dataset[:,2].cpu().numpy(), dataset[:,3].cpu().numpy())
+scatter_both([dataset[:,0].cpu(), dataset[:,1].cpu(), pred_theta.detach().cpu().view(-1)],
+             [dataset[:,0].cpu(), dataset[:,1].cpu(), torch.as_tensor(real_theta)],
              'Theta',
              'Theta.png')
 

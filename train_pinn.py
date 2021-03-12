@@ -10,15 +10,16 @@ import torch.optim as optim
 from tqdm import tqdm
 
 from model import BS_PDE, BS_SDE, L2
+import option_pricing_BS as bs
 import modules as m
 import util
 
 # Hyperparameters for run
-header = 'BS_1_fixed_'    
+header = 'BS_1_fixed_sigma_'    
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 debug = False
-seed = 10000                               # Seeds for stochastic reproducability
+seed = 100                               # Seeds for stochastic reproducability
 batch_size = 1024                       # Batch size for SGD
 epochs = 2000                           # Number of epochs to train network for
 lr = 5e-4                               # Initial learning rate
@@ -28,24 +29,28 @@ verbose = 1                           # Number of epochs to print, -1 for none
 
 ### Strike price and interest rate respectively ###
 k = 1
-r = 0.03
+r = 0.0
 
 # Set seed
 util.set_seed(seed, device)
 
 # Load in data
-# dataset = util.import_dataset(data_path='option_call_dataset_frozen.txt')
-dataset = util.import_dataset(data_path='option_call_dataset_brownian.txt')
+dataset = util.import_dataset(data_path='option_call_dataset_simplified.txt')
+# dataset = util.import_dataset(data_path='option_call_dataset_brownian.txt')
 # Shuffle
 # dataset = torch.as_tensor(dataset[np.random.permutation(len(dataset))], device=device).float()
 dataset = torch.as_tensor(dataset, device=device).float()
 
 # 90 / 10 split on training and validation
-xtrain = dataset[:9 * len(dataset) // 10, :-1]
-ytrain = dataset[:9 * len(dataset) // 10, -1]
+xtrain = dataset[:, :-1]
+ytrain = dataset[:, -1]
+theta = bs.theta(xtrain[:,0].cpu().numpy(), k, xtrain[:,2].cpu().numpy(), r, 0.65)
+theta = torch.as_tensor(theta, device=device).float()
+gamma = bs.gamma(xtrain[:,0].cpu().numpy(), k, xtrain[:,2].cpu().numpy(), r, 0.65)
+gamma = torch.as_tensor(gamma, device=device).float()
 
-xval = dataset[9 * len(dataset) // 10:, :-1]
-yval = dataset[9 * len(dataset) // 10:, -1]
+xval = dataset[95 * len(dataset) // 100:, :-1]
+yval = dataset[95 * len(dataset) // 100:, -1]
 
 # Drop everything except for S and T
 xtrain = torch.cat((xtrain[:,0:1], xtrain[:,2:3]), 1)
@@ -81,10 +86,21 @@ def sde_setup(x, y):
 train_data = torch.cat((xtrain[1:], ytrain.unsqueeze(1)[1:], xtrain[:-1], ytrain.unsqueeze(1)[:-1]), 1)
 val_data = torch.cat((xval[1:], yval.unsqueeze(1)[1:], xval[:-1], yval.unsqueeze(1)[:-1]), 1)
 
+### Temp loading
+#dataset = torch.load('brownian_dataset_500_500.pth').to(device).float()
+#train_data = dataset[:9 * len(dataset) // 10]
+#val_data = dataset[9 * len(dataset) // 10:]
+
+###
+
 # Declare model and optimizer
 #model = BS_PDE(device)
 model = BS_SDE(device)
 model = model.to(device)
+#optimizer = optim.Adam([
+#        {'params': model.layers.parameters(), 'weight_decay':0},
+#        {'params': model.sigma, 'lr': 1e-3}
+#    ], lr=lr)
 optimizer = optim.Adam(model.parameters(), lr=lr)
 
 # Load in checkpoint
@@ -108,7 +124,11 @@ for epoch in range(epochs):
     start_time = time.time()
     running_loss = 0
     # Shuffle data
-    train_data = train_data[np.random.permutation(len(train_data))]
+    perm = np.random.permutation(len(train_data))
+    train_data = train_data[perm]
+    theta = theta[perm]
+    gamma = gamma[perm]
+    
     xtrain = train_data[:,:2]
     ytrain = train_data[:,2]
     xval = val_data[:,:2]
@@ -120,14 +140,17 @@ for epoch in range(epochs):
         idx = slice(batch_idx*batch_size,(batch_idx+1)*batch_size)
         xbatch = xtrain[idx]
         ybatch = ytrain[idx]
+        tbatch = theta[idx]
+        gbatch = gamma[idx]
         prev_batch = train_data[idx][:,3:-1]
         
         h, V = model.pde_structure(xbatch[:,:3], r)
         loss = L2(h, torch.zeros(h.shape).to(device)) + \
-               L2(V.squeeze(), ybatch) + \
-               model.sde_conditions(xbatch, prev_batch, r)
-               #model.boundary_conditions(xbatch[:,:3], k, r, epoch=epoch) + \
-        loss *= 100
+               model.boundary_conditions(xbatch[:,:3], k, r, epoch=epoch) + \
+               1e-1 * L2(tbatch, model.get_theta(xbatch[:,:3])) + \
+               5e-2 * L2(gbatch, model.get_gamma(xbatch[:,:3]))
+               #L2(V.squeeze(), ybatch) + \
+               #model.sde_conditions(xbatch, prev_batch, r)
         
         optimizer.zero_grad()
         loss.backward()
@@ -148,26 +171,22 @@ for epoch in range(epochs):
         h, V = model.pde_structure(xbatch[:,:3], r)
         loss = L2(h, torch.zeros(h.shape).to(device)) + \
                L2(V.squeeze(), ybatch) + \
-               model.sde_conditions(xbatch, prev_batch, r)
-               #model.boundary_conditions(xbatch[:,:3], k, r, epoch=epoch)
-        loss *= 100
+               model.boundary_conditions(xbatch[:,:3], k, r, epoch=epoch)
+               #model.sde_conditions(xbatch, prev_batch, r)
                
         running_val_loss += loss.item()
     running_val_loss /= (batch_idx + 1)
     model.update_loss(running_loss, val_loss=running_val_loss)
     if verbose != -1 and epoch%verbose == 0:
-        print("[%d] train: %.8f | val: %.8f | sigma: %.3f |  elapsed: %.2f (s)" % (epoch+1, running_loss, running_val_loss, model.sigma.item(), (time.time()-start_time)*verbose))
+        print("[%d] train: %.8f | val: %.8f | sigma: %.3f |  elapsed: %.2f (s)" % (epoch+1, running_loss, running_val_loss, model.sigma, (time.time()-start_time)*verbose))
         time.sleep(0.5)
     
     if running_val_loss < min_loss:
         min_loss = running_val_loss
         model.save(header=header, optimizer=optimizer)
         
-    sigmas.append(model.sigma.detach().cpu().item())
-
-plt.plot([i for i in range(1, len(sigmas) + 1)], sigmas)
-plt.plot([i for i in range(1, len(sigmas) + 1)], [0.65 for i in range(1, len(sigmas) + 1)], '--')
-plt.legend(['Learned', 'Actual'])
-plt.xlabel('Epoch')
-plt.ylabel('Implied Volatility')
-
+    #sigmas.append(model.sigma.detach().cpu().item())
+    sigmas.append(model.sigma)
+    
+bs.evaluate(model, dataset)
+    
